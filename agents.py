@@ -52,6 +52,7 @@ class Prosumer:
     price = None # price by by each prosumer during all periods
     valOne = None #
     Repart = None # a repartition function based on shapley value
+    benefit = None # reward for each prosumer at each period
     
 
     def __init__(self, maxperiod, initialprob):
@@ -69,7 +70,7 @@ class Prosumer:
         self.smax = 0
         self.gamma = np.zeros(maxperiod) 
         self.phi = np.zeros(maxperiod)
-        self.mode = np.zeros(maxperiod ,dtype=Mode)
+        self.mode = np.zeros(maxperiod, dtype=Mode)
         self.prmode = np.zeros((maxperiod,2))
         for i in range(maxperiod):
             self.prmode[i][0] = initialprob
@@ -85,4 +86,5 @@ class Prosumer:
         self.price = np.zeros(maxperiod)
         self.Repart = np.zeros(maxperiod)
         self.valOne = np.zeros(maxperiod)
+        self.benefit = 0
 
