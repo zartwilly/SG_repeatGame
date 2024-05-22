@@ -42,7 +42,8 @@ class Smartgrid :
     valsg = None #
     valEgoc = None #
     ant = None #  measures th deviation of the strategies (prmode) taken by each prosumer (in the SG) from the best one, in a context of EPO
-
+    prices_min = None # Minimum price for each prosumer for each period
+    prices_max = None # Maximum price for each prosumer for each period
     
     
     
@@ -80,9 +81,14 @@ class Smartgrid :
         self.ant = np.zeros(maxperiod)
         self.valEgoc = np.zeros(maxperiod)
         self.valLess = np.zeros(maxperiod)
+        self.prices_min = np.zeros((N, maxperiod))
+        self.prices_max = np.zeros((N, maxperiod))
         
       
     #%% new function for SG with repeated game
+    ###########################################################################
+    #                       compute smartgrid variables
+    ###########################################################################
     def computeValSG(self, period):
         """
         
@@ -271,11 +277,7 @@ class Smartgrid :
         """
         self.ant[period] = self.valLess[period] - self.valEgoc[period]
        
-    
-    #%% ALL of the following methods apply to all the prosumers of the smartgrid over one given period
-    
-    
-    def computesuminput(self, period): 
+    def computeSumInput(self, period): 
         """
         Calculate the sum of the production of all prosumers during a period
         
@@ -289,7 +291,7 @@ class Smartgrid :
             tmpsum = tmpsum + self.prosumers[i].prodit[period]
         self.insg[period] = tmpsum
     
-    def computesumoutput(self, period): 
+    def computeSumOutput(self, period): 
         """
         Calculate sum of the consumption of all prosumers during a period
         
@@ -302,6 +304,301 @@ class Smartgrid :
         for i in range(self.prosumers.size):
             tmpsum = tmpsum + self.prosumers[i].consit[period]
         self.outsg[period] = tmpsum
+
+    def computeUtility(self, period): 
+        """
+        Calculate utility function using min, max and last prosumer's benefits
+        
+        Parameters
+        ----------
+        period: int 
+            an instance of time t
+            
+        """
+        N = self.prosumers.size
+        
+        for i in range(N):
+            if self.prices_max[i][period] != 0 or self.prices_min[i][period] != 0 :
+                nume = self.prices_max[i][period] - self.prosumers[i].price[period]
+                demo = self.prices_max[i][period] - self.prices_min[i][period]
+                self.prosumers[i].utility[period] = 1 - nume/demo
+
+            else:
+                self.prosumers[i].utility[period] = 0
+                
+    def computeBenefit(self): 
+        """
+        Calculate benefit for each prosumer for all period
+        
+        Parameters
+        ----------
+        period: int 
+            an instance of time t
+        
+        """
+        N = self.prosumers.size
+        
+        for i in range(N):
+            self.prosumers[i].benefit = np.sum(self.prosumers[i].price)
+                
+    ###########################################################################
+    #                       update prosumers variables
+    ###########################################################################
+    def updateMaxMinPrice(self, period):
+        """
+        update the max and the min prices for each prosumer at one period
+
+        Parameters
+        ----------
+        period : int
+            an instance of time t
+
+        Returns
+        -------
+        None.
+
+        """
+        for i in range(self.prosumers.size):
+            self.prices_max[i][period] = max(self.prices_max[i][period], 
+                                             self.prosumers[i].price[period])
+            self.prices_min[i][period] = min(self.prices_min[i][period], 
+                                             self.prosumers[i].price[period])
+    
+    def updateState(self, period): 
+        """
+        Change prosumer's state based on its production, comsumption and available storage
+        
+        Parameters
+        ----------
+        period : int 
+            an instance of time t
+        """
+        N = self.prosumers.size
+        
+        for i in range(N):    
+            if self.prosumers[i].production[period] >= self.prosumers[i].consumption[period] :
+                self.prosumers[i].state[period] = ag.State.SURPLUS
+            
+            elif self.prosumers[i].production[period] \
+                + self.prosumers[i].storage[period] >= self.prosumers[i].consumption[period] :
+                self.prosumers[i].state[period] = ag.State.SELF
+            
+            else :
+                self.prosumers[i].state[period] = ag.State.DEFICIT
+                
+    def updatemodeLRI(self, period, threshold): 
+        """
+        # Update mode using rules from LRI
+        
+        Parameters:
+        ----------
+        period : int
+            an instance of time t
+        
+        threshold: float
+            an threshold 
+        """
+        N = self.prosumers.size
+        
+        for i in range(N):
+            rand = rdm.uniform(0,1)
+            
+            if self.prosumers[i].state[period] == ag.State.SURPLUS:
+                if (rand <= self.prosumers[i].prmode[period][0] \
+                    and self.prosumers[i].prmode[period][1] < threshold) \
+                    or self.prosumers[i].prmode[period][0] > threshold :
+                    self.prosumers[i].mode[period] = ag.Mode.DIS
+                
+                else :
+                    self.prosumers[i].mode[period] = ag.Mode.PROD
+            
+            elif self.prosumers[i].state[period] == ag.State.SELF :
+                if (rand <= self.prosumers[i].prmode[period][0] \
+                    and self.prosumers[i].prmode[period][1] < threshold) \
+                    or self.prosumers[i].prmode[period][0] > threshold :
+                    self.prosumers[i].mode[period] = ag.Mode.DIS
+                
+                else :
+                    self.prosumers[i].mode[period] = ag.Mode.CONSMINUS
+            
+            else :
+                if (rand <= self.prosumers[i].prmode[period][0] \
+                    and self.prosumers[i].prmode[period][1] < threshold) \
+                    or self.prosumers[i].prmode[period][0] > threshold :
+                    self.prosumers[i].mode[period] = ag.Mode.CONSPLUS
+                else :
+                    self.prosumers[i].mode[period] = ag.Mode.CONSMINUS
+                    
+    def updatesmartgrid(self, period): 
+        """
+        Update storage for next period ie period+1, consit, prodit based on mode and state
+        
+        Parameters:
+        ----------
+        period : int
+            an instance of time t
+        """
+        N = self.prosumers.size
+        
+        for i in range(N):
+            if self.prosumers[i].state[period] == ag.State.DEFICIT:
+                self.prosumers[i].prodit[period] = 0
+                if self.prosumers[i].mode[period] == ag.Mode.CONSPLUS:
+                    self.prosumers[i].storage[period+1] = 0
+                    self.prosumers[i].consit[period] \
+                        = self.prosumers[i].consumption[period] \
+                            - (self.prosumers[i].production[period] \
+                               + self.prosumers[i].storage[period])
+                
+                else :
+                    self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
+                    self.prosumers[i].consit[period] \
+                        = self.prosumers[i].consumption[period] \
+                            - self.prosumers[i].production[period]
+            
+            elif self.prosumers[i].state[period] == ag.State.SELF:
+                self.prosumers[i].prodit[period] = 0
+                
+                if self.prosumers[i].mode[period] == ag.Mode.CONSMINUS:
+                    self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
+                    self.prosumers[i].consit[period] \
+                        = self.prosumers[i].consumption[period] \
+                            - self.prosumers[i].production[period]
+                
+                else :
+                    self.prosumers[i].storage[period+1] \
+                        = self.prosumers[i].storage[period] \
+                            - (self.prosumers[i].consumption[period] \
+                               - self.prosumers[i].production[period])
+                    self.prosumers[i].consit[period] = 0
+            else :
+                self.prosumers[i].consit[period] = 0
+                
+                if self.prosumers[i].mode[period] == ag.Mode.DIS:
+                    self.prosumers[i].storage[period+1] \
+                        = min(self.prosumers[i].smax,self.prosumers[i].storage[period] \
+                              +(self.prosumers[i].production[period] \
+                                - self.prosumers[i].consumption[period]))
+                    self.prosumers[i].prodit[period] \
+                        = aux.apv(self.prosumers[i].production[period] \
+                              - self.prosumers[i].consumption[period] \
+                                  -(self.prosumers[i].smax \
+                                    - self.prosumers[i].storage[period] ))
+                else:
+                    self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
+                    self.prosumers[i].prodit[period] \
+                        = self.prosumers[i].production[period] \
+                            - self.prosumers[i].consumption[period]
+   
+    def updateProbaLRI(self, period, slowdown): 
+        """
+        Update probability for LRI based mode choice
+        
+        Parameters
+        ----------
+        period: int 
+            an instance of time t
+            
+        slowdown: float
+            Slowdown factor or learning rate
+            
+        """
+        N = self.prosumers.size
+        
+        for i in range(N):
+            if self.prosumers[i].state[period] == ag.State.SURPLUS:
+                if self.prosumers[i].mode[period] == ag.Mode.DIS :
+                    self.prosumers[i].prmode[period][0] \
+                        = min(1,
+                              self.prosumers[i].prmode[period][0] \
+                                  + slowdown \
+                                      * self.prosumers[i].utility[period] \
+                                      * (1 - self.prosumers[i].prmode[period][0]))
+                    self.prosumers[i].prmode[period][1] \
+                        = 1 - self.prosumers[i].prmode[period][0]
+                
+                else :
+                    self.prosumers[i].prmode[period][1] \
+                        = min(1,
+                              self.prosumers[i].prmode[period][1] \
+                                  + slowdown \
+                                      * self.prosumers[i].utility[period] \
+                                      * (1 - self.prosumers[i].prmode[period][1]))
+                    self.prosumers[i].prmode[period][0] \
+                        = 1 - self.prosumers[i].prmode[period][1]
+                    
+            elif self.prosumers[i].state[period] == ag.State.SELF:
+                if self.prosumers[i].mode[period] == ag.Mode.DIS :
+                    self.prosumers[i].prmode[period][0] \
+                        = min(1,
+                              self.prosumers[i].prmode[period][0] \
+                                  + slowdown \
+                                      * self.prosumers[i].utility[period] \
+                                      * (1 - self.prosumers[i].prmode[period][0]))
+                    self.prosumers[i].prmode[period][1] \
+                        = 1 - self.prosumers[i].prmode[period][0]
+                
+                else :
+                    self.prosumers[i].prmode[period][1] \
+                        = min(1,
+                              self.prosumers[i].prmode[period][1] \
+                                  + slowdown \
+                                      * self.prosumers[i].utility[period] \
+                                      * (1 - self.prosumers[i].prmode[period][1]))
+                    self.prosumers[i].prmode[period][0] \
+                        = 1 - self.prosumers[i].prmode[period][1]
+            else :
+                if self.prosumers[i].mode[period] == ag.Mode.CONSPLUS :
+                    self.prosumers[i].prmode[period][0] \
+                        = min(1,
+                              self.prosumers[i].prmode[period][0] \
+                                  + slowdown \
+                                      * self.prosumers[i].utility[period] \
+                                      * (1 - self.prosumers[i].prmode[period][0]))
+                    self.prosumers[i].prmode[period][1] \
+                        = 1 - self.prosumers[i].prmode[period][0]
+                
+                else :
+                    self.prosumers[i].prmode[period][1] \
+                        = min(1,
+                              self.prosumers[i].prmode[period][1] \
+                                  + slowdown \
+                                      * self.prosumers[i].utility[period] \
+                                      * (1 - self.prosumers[i].prmode[period][1]))
+                    self.prosumers[i].prmode[period][0] \
+                        = 1 - self.prosumers[i].prmode[period][1]
+    
+    
+    #%% ALL of the following methods apply to all the prosumers of the smartgrid over one given period
+    
+    
+    # def computesuminput(self, period): 
+    #     """
+    #     Calculate the sum of the production of all prosumers during a period
+        
+    #     Parameters
+    #     ----------
+    #     period: int 
+    #         an instance of time t
+    #     """
+    #     tmpsum = 0
+    #     for i in range(self.prosumers.size):
+    #         tmpsum = tmpsum + self.prosumers[i].prodit[period]
+    #     self.insg[period] = tmpsum
+    
+    # def computesumoutput(self, period): 
+    #     """
+    #     Calculate sum of the consumption of all prosumers during a period
+        
+    #     Parameters
+    #     ----------
+    #     period: int 
+    #         an instance of time t
+    #     """
+    #     tmpsum = 0
+    #     for i in range(self.prosumers.size):
+    #         tmpsum = tmpsum + self.prosumers[i].consit[period]
+    #     self.outsg[period] = tmpsum
 
     def computevirtualbenefit(self, period): 
         """
@@ -724,230 +1021,230 @@ class Smartgrid :
                                       (aux.phiepominus(oM - im) \
                                        + iM * self.piminus[period]))
             
-    def computeutility(self, period): 
-        """
-        Calculate utility function using min, max and last prosumer's benefits
+    # def computeutility(self, period): 
+    #     """
+    #     Calculate utility function using min, max and last prosumer's benefits
         
-        Parameters
-        ----------
-        period: int 
-            an instance of time t
+    #     Parameters
+    #     ----------
+    #     period: int 
+    #         an instance of time t
             
-        """
-        N = self.prosumers.size
+    #     """
+    #     N = self.prosumers.size
         
-        for i in range(N):
-            if (self.bgmax[i][period] != 0 or self.bgmin[i][period] != 0):
-                self.prosumers[i].utility[period] \
-                    = 1 - ((self.bgmax[i][period] \
-                            - self.prosumers[i].benefit[period])\
-                           /(self.bgmax[i][period] - self.bgmin[i][period]))
+    #     for i in range(N):
+    #         if (self.bgmax[i][period] != 0 or self.bgmin[i][period] != 0):
+    #             self.prosumers[i].utility[period] \
+    #                 = 1 - ((self.bgmax[i][period] \
+    #                         - self.prosumers[i].benefit[period])\
+    #                         /(self.bgmax[i][period] - self.bgmin[i][period]))
             
-            else:
-                self.prosumers[i].utility[period] = 0
+    #         else:
+    #             self.prosumers[i].utility[period] = 0
                 
-    def computebenefit(self, period): 
-        """
-        Calculate benefit for each prosumer for a period
+    # def computebenefit(self, period): 
+    #     """
+    #     Calculate benefit for each prosumer for a period
         
-        Parameters
-        ----------
-        period: int 
-            an instance of time t
+    #     Parameters
+    #     ----------
+    #     period: int 
+    #         an instance of time t
         
-        """
-        N = self.prosumers.size
+    #     """
+    #     N = self.prosumers.size
         
-        for i in range(N):
-            self.prosumers[i].benefit[period] \
-                = self.prosumers[i].virtualben[period] \
-                    + (self.czerom[period] \
-                       * aux.apv(self.prosumers[i].consumption[period] \
-                             - self.prosumers[i].production[period])
-                       ) \
-                    - self.prosumers[i].virtualcost[period]
+    #     for i in range(N):
+    #         self.prosumers[i].benefit[period] \
+    #             = self.prosumers[i].virtualben[period] \
+    #                 + (self.czerom[period] \
+    #                    * aux.apv(self.prosumers[i].consumption[period] \
+    #                          - self.prosumers[i].production[period])
+    #                    ) \
+    #                 - self.prosumers[i].virtualcost[period]
                                                          
-    def uptdateprobaLRI(self, period, slowdown): 
-        """
-        Update probability for LRI based mode choice
+    # def uptdateprobaLRI(self, period, slowdown): 
+    #     """
+    #     Update probability for LRI based mode choice
         
-        Parameters
-        ----------
-        period: int 
-            an instance of time t
+    #     Parameters
+    #     ----------
+    #     period: int 
+    #         an instance of time t
             
-        slowdown: float
-            Slowdown factor
+    #     slowdown: float
+    #         Slowdown factor
             
-        """
-        N = self.prosumers.size
+    #     """
+    #     N = self.prosumers.size
         
-        for i in range(N):
-            if self.prosumers[i].state[period] == ag.State.SURPLUS:
-                if self.prosumers[i].mode[period] == ag.Mode.DIS :
-                    self.prosumers[i].prmode[period][0] \
-                        = min(1,
-                              self.prosumers[i].prmode[period][0] \
-                                  + slowdown \
-                                      * self.prosumers[i].utility[period] \
-                                      * (1 - self.prosumers[i].prmode[period][0]))
-                    self.prosumers[i].prmode[period][1] \
-                        = 1 - self.prosumers[i].prmode[period][0]
+    #     for i in range(N):
+    #         if self.prosumers[i].state[period] == ag.State.SURPLUS:
+    #             if self.prosumers[i].mode[period] == ag.Mode.DIS :
+    #                 self.prosumers[i].prmode[period][0] \
+    #                     = min(1,
+    #                           self.prosumers[i].prmode[period][0] \
+    #                               + slowdown \
+    #                                   * self.prosumers[i].utility[period] \
+    #                                   * (1 - self.prosumers[i].prmode[period][0]))
+    #                 self.prosumers[i].prmode[period][1] \
+    #                     = 1 - self.prosumers[i].prmode[period][0]
                 
-                else :
-                    self.prosumers[i].prmode[period][1] \
-                        = min(1,
-                              self.prosumers[i].prmode[period][1] \
-                                  + slowdown \
-                                      * self.prosumers[i].utility[period] \
-                                      * (1 - self.prosumers[i].prmode[period][1]))
-                    self.prosumers[i].prmode[period][0] \
-                        = 1 - self.prosumers[i].prmode[period][1]
+    #             else :
+    #                 self.prosumers[i].prmode[period][1] \
+    #                     = min(1,
+    #                           self.prosumers[i].prmode[period][1] \
+    #                               + slowdown \
+    #                                   * self.prosumers[i].utility[period] \
+    #                                   * (1 - self.prosumers[i].prmode[period][1]))
+    #                 self.prosumers[i].prmode[period][0] \
+    #                     = 1 - self.prosumers[i].prmode[period][1]
                     
-            elif self.prosumers[i].state[period] == ag.State.SELF:
-                if self.prosumers[i].mode[period] == ag.Mode.DIS :
-                    self.prosumers[i].prmode[period][0] \
-                        = min(1,
-                              self.prosumers[i].prmode[period][0] \
-                                  + slowdown \
-                                      * self.prosumers[i].utility[period] \
-                                      * (1 - self.prosumers[i].prmode[period][0]))
-                    self.prosumers[i].prmode[period][1] \
-                        = 1 - self.prosumers[i].prmode[period][0]
+    #         elif self.prosumers[i].state[period] == ag.State.SELF:
+    #             if self.prosumers[i].mode[period] == ag.Mode.DIS :
+    #                 self.prosumers[i].prmode[period][0] \
+    #                     = min(1,
+    #                           self.prosumers[i].prmode[period][0] \
+    #                               + slowdown \
+    #                                   * self.prosumers[i].utility[period] \
+    #                                   * (1 - self.prosumers[i].prmode[period][0]))
+    #                 self.prosumers[i].prmode[period][1] \
+    #                     = 1 - self.prosumers[i].prmode[period][0]
                 
-                else :
-                    self.prosumers[i].prmode[period][1] \
-                        = min(1,
-                              self.prosumers[i].prmode[period][1] \
-                                  + slowdown \
-                                      * self.prosumers[i].utility[period] \
-                                      * (1 - self.prosumers[i].prmode[period][1]))
-                    self.prosumers[i].prmode[period][0] \
-                        = 1 - self.prosumers[i].prmode[period][1]
-            else :
-                if self.prosumers[i].mode[period] == ag.Mode.CONSPLUS :
-                    self.prosumers[i].prmode[period][0] \
-                        = min(1,
-                              self.prosumers[i].prmode[period][0] \
-                                  + slowdown \
-                                      * self.prosumers[i].utility[period] \
-                                      * (1 - self.prosumers[i].prmode[period][0]))
-                    self.prosumers[i].prmode[period][1] \
-                        = 1 - self.prosumers[i].prmode[period][0]
+    #             else :
+    #                 self.prosumers[i].prmode[period][1] \
+    #                     = min(1,
+    #                           self.prosumers[i].prmode[period][1] \
+    #                               + slowdown \
+    #                                   * self.prosumers[i].utility[period] \
+    #                                   * (1 - self.prosumers[i].prmode[period][1]))
+    #                 self.prosumers[i].prmode[period][0] \
+    #                     = 1 - self.prosumers[i].prmode[period][1]
+    #         else :
+    #             if self.prosumers[i].mode[period] == ag.Mode.CONSPLUS :
+    #                 self.prosumers[i].prmode[period][0] \
+    #                     = min(1,
+    #                           self.prosumers[i].prmode[period][0] \
+    #                               + slowdown \
+    #                                   * self.prosumers[i].utility[period] \
+    #                                   * (1 - self.prosumers[i].prmode[period][0]))
+    #                 self.prosumers[i].prmode[period][1] \
+    #                     = 1 - self.prosumers[i].prmode[period][0]
                 
-                else :
-                    self.prosumers[i].prmode[period][1] \
-                        = min(1,
-                              self.prosumers[i].prmode[period][1] \
-                                  + slowdown \
-                                      * self.prosumers[i].utility[period] \
-                                      * (1 - self.prosumers[i].prmode[period][1]))
-                    self.prosumers[i].prmode[period][0] \
-                        = 1 - self.prosumers[i].prmode[period][1]
+    #             else :
+    #                 self.prosumers[i].prmode[period][1] \
+    #                     = min(1,
+    #                           self.prosumers[i].prmode[period][1] \
+    #                               + slowdown \
+    #                                   * self.prosumers[i].utility[period] \
+    #                                   * (1 - self.prosumers[i].prmode[period][1]))
+    #                 self.prosumers[i].prmode[period][0] \
+    #                     = 1 - self.prosumers[i].prmode[period][1]
                      
-    def updatesmartgrid(self, period): 
-        """
-        Update storage for next period ie period+1, consit, prodit based on mode and state
+    # def updatesmartgrid(self, period): 
+    #     """
+    #     Update storage for next period ie period+1, consit, prodit based on mode and state
         
-        Parameters:
-        ----------
-        period : int
-            an instance of time t
-        """
-        N = self.prosumers.size
+    #     Parameters:
+    #     ----------
+    #     period : int
+    #         an instance of time t
+    #     """
+    #     N = self.prosumers.size
         
-        for i in range(N):
-            if self.prosumers[i].state[period] == ag.State.DEFICIT:
-                self.prosumers[i].prodit[period] = 0
-                if self.prosumers[i].mode[period] == ag.Mode.CONSPLUS:
-                    self.prosumers[i].storage[period+1] = 0
-                    self.prosumers[i].consit[period] \
-                        = self.prosumers[i].consumption[period] \
-                            - (self.prosumers[i].production[period] \
-                               + self.prosumers[i].storage[period])
+    #     for i in range(N):
+    #         if self.prosumers[i].state[period] == ag.State.DEFICIT:
+    #             self.prosumers[i].prodit[period] = 0
+    #             if self.prosumers[i].mode[period] == ag.Mode.CONSPLUS:
+    #                 self.prosumers[i].storage[period+1] = 0
+    #                 self.prosumers[i].consit[period] \
+    #                     = self.prosumers[i].consumption[period] \
+    #                         - (self.prosumers[i].production[period] \
+    #                            + self.prosumers[i].storage[period])
                 
-                else :
-                    self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
-                    self.prosumers[i].consit[period] \
-                        = self.prosumers[i].consumption[period] \
-                            - self.prosumers[i].production[period]
+    #             else :
+    #                 self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
+    #                 self.prosumers[i].consit[period] \
+    #                     = self.prosumers[i].consumption[period] \
+    #                         - self.prosumers[i].production[period]
             
-            elif self.prosumers[i].state[period] == ag.State.SELF:
-                self.prosumers[i].prodit[period] = 0
+    #         elif self.prosumers[i].state[period] == ag.State.SELF:
+    #             self.prosumers[i].prodit[period] = 0
                 
-                if self.prosumers[i].mode[period] == ag.Mode.CONSMINUS:
-                    self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
-                    self.prosumers[i].consit[period] \
-                        = self.prosumers[i].consumption[period] \
-                            - self.prosumers[i].production[period]
+    #             if self.prosumers[i].mode[period] == ag.Mode.CONSMINUS:
+    #                 self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
+    #                 self.prosumers[i].consit[period] \
+    #                     = self.prosumers[i].consumption[period] \
+    #                         - self.prosumers[i].production[period]
                 
-                else :
-                    self.prosumers[i].storage[period+1] \
-                        = self.prosumers[i].storage[period] \
-                            - (self.prosumers[i].consumption[period] \
-                               - self.prosumers[i].production[period])
-                    self.prosumers[i].consit[period] = 0
-            else :
-                self.prosumers[i].consit[period] = 0
+    #             else :
+    #                 self.prosumers[i].storage[period+1] \
+    #                     = self.prosumers[i].storage[period] \
+    #                         - (self.prosumers[i].consumption[period] \
+    #                            - self.prosumers[i].production[period])
+    #                 self.prosumers[i].consit[period] = 0
+    #         else :
+    #             self.prosumers[i].consit[period] = 0
                 
-                if self.prosumers[i].mode[period] == ag.Mode.DIS:
-                    self.prosumers[i].storage[period+1] \
-                        = min(self.prosumers[i].smax,self.prosumers[i].storage[period] \
-                              +(self.prosumers[i].production[period] \
-                                - self.prosumers[i].consumption[period]))
-                    self.prosumers[i].prodit[period] \
-                        = aux.apv(self.prosumers[i].production[period] \
-                              - self.prosumers[i].consumption[period] \
-                                  -(self.prosumers[i].smax \
-                                    - self.prosumers[i].storage[period] ))
-                else:
-                    self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
-                    self.prosumers[i].prodit[period] \
-                        = self.prosumers[i].production[period] \
-                            - self.prosumers[i].consumption[period]
+    #             if self.prosumers[i].mode[period] == ag.Mode.DIS:
+    #                 self.prosumers[i].storage[period+1] \
+    #                     = min(self.prosumers[i].smax,self.prosumers[i].storage[period] \
+    #                           +(self.prosumers[i].production[period] \
+    #                             - self.prosumers[i].consumption[period]))
+    #                 self.prosumers[i].prodit[period] \
+    #                     = aux.apv(self.prosumers[i].production[period] \
+    #                           - self.prosumers[i].consumption[period] \
+    #                               -(self.prosumers[i].smax \
+    #                                 - self.prosumers[i].storage[period] ))
+    #             else:
+    #                 self.prosumers[i].storage[period+1] = self.prosumers[i].storage[period]
+    #                 self.prosumers[i].prodit[period] \
+    #                     = self.prosumers[i].production[period] \
+    #                         - self.prosumers[i].consumption[period]
     
-    def updatemodeLRI(self, period, threshold): 
-        """
-        # Update mode using rules from LRI
+    # def updatemodeLRI(self, period, threshold): 
+    #     """
+    #     # Update mode using rules from LRI
         
-        Parameters:
-        ----------
-        period : int
-            an instance of time t
+    #     Parameters:
+    #     ----------
+    #     period : int
+    #         an instance of time t
         
-        threshold: float
-            an threshold 
-        """
-        N = self.prosumers.size
+    #     threshold: float
+    #         an threshold 
+    #     """
+    #     N = self.prosumers.size
         
-        for i in range(N):
-            rand = rdm.uniform(0,1)
+    #     for i in range(N):
+    #         rand = rdm.uniform(0,1)
             
-            if self.prosumers[i].state[period] == ag.State.SURPLUS:
-                if (rand <= self.prosumers[i].prmode[period][0] \
-                    and self.prosumers[i].prmode[period][1] < threshold) \
-                    or self.prosumers[i].prmode[period][0] > threshold :
-                    self.prosumers[i].mode[period] = ag.Mode.DIS
+    #         if self.prosumers[i].state[period] == ag.State.SURPLUS:
+    #             if (rand <= self.prosumers[i].prmode[period][0] \
+    #                 and self.prosumers[i].prmode[period][1] < threshold) \
+    #                 or self.prosumers[i].prmode[period][0] > threshold :
+    #                 self.prosumers[i].mode[period] = ag.Mode.DIS
                 
-                else :
-                    self.prosumers[i].mode[period] = ag.Mode.PROD
+    #             else :
+    #                 self.prosumers[i].mode[period] = ag.Mode.PROD
             
-            elif self.prosumers[i].state[period] == ag.State.SELF :
-                if (rand <= self.prosumers[i].prmode[period][0] \
-                    and self.prosumers[i].prmode[period][1] < threshold) \
-                    or self.prosumers[i].prmode[period][0] > threshold :
-                    self.prosumers[i].mode[period] = ag.Mode.DIS
+    #         elif self.prosumers[i].state[period] == ag.State.SELF :
+    #             if (rand <= self.prosumers[i].prmode[period][0] \
+    #                 and self.prosumers[i].prmode[period][1] < threshold) \
+    #                 or self.prosumers[i].prmode[period][0] > threshold :
+    #                 self.prosumers[i].mode[period] = ag.Mode.DIS
                 
-                else :
-                    self.prosumers[i].mode[period] = ag.Mode.CONSMINUS
+    #             else :
+    #                 self.prosumers[i].mode[period] = ag.Mode.CONSMINUS
             
-            else :
-                if (rand <= self.prosumers[i].prmode[period][0] \
-                    and self.prosumers[i].prmode[period][1] < threshold) \
-                    or self.prosumers[i].prmode[period][0] > threshold :
-                    self.prosumers[i].mode[period] = ag.Mode.CONSPLUS
-                else :
-                    self.prosumers[i].mode[period] = ag.Mode.CONSMINUS
+    #         else :
+    #             if (rand <= self.prosumers[i].prmode[period][0] \
+    #                 and self.prosumers[i].prmode[period][1] < threshold) \
+    #                 or self.prosumers[i].prmode[period][0] > threshold :
+    #                 self.prosumers[i].mode[period] = ag.Mode.CONSPLUS
+    #             else :
+    #                 self.prosumers[i].mode[period] = ag.Mode.CONSMINUS
                     
     def updatemodeSDA(self, period):
         """
@@ -1089,51 +1386,51 @@ class Smartgrid :
                 else :
                     self.prosumers[i].mode[period] = ag.Mode.PROD
             
-    def updateState(self, period): 
-        """
-        Change prosumer's state based on its production, comsumption and available storage
+    # def updateState(self, period): 
+    #     """
+    #     Change prosumer's state based on its production, comsumption and available storage
         
-        Parameters
-        ----------
-        period : int 
-            an instance of time t
-        """
-        N = self.prosumers.size
+    #     Parameters
+    #     ----------
+    #     period : int 
+    #         an instance of time t
+    #     """
+    #     N = self.prosumers.size
         
-        for i in range(N):    
-            if self.prosumers[i].production[period] >= self.prosumers[i].consumption[period] :
-                self.prosumers[i].state[period] = ag.State.SURPLUS
+    #     for i in range(N):    
+    #         if self.prosumers[i].production[period] >= self.prosumers[i].consumption[period] :
+    #             self.prosumers[i].state[period] = ag.State.SURPLUS
             
-            elif self.prosumers[i].production[period] \
-                + self.prosumers[i].storage[period] >= self.prosumers[i].consumption[period] :
-                self.prosumers[i].state[period] = ag.State.SELF
+    #         elif self.prosumers[i].production[period] \
+    #             + self.prosumers[i].storage[period] >= self.prosumers[i].consumption[period] :
+    #             self.prosumers[i].state[period] = ag.State.SELF
             
-            else :
-                self.prosumers[i].state[period] = ag.State.DEFICIT
+    #         else :
+    #             self.prosumers[i].state[period] = ag.State.DEFICIT
                 
-    def updateMinmax(self, period, iteration):
-        """
+    # def updateMinmax(self, period, iteration):
+    #     """
         
 
-        Parameters
-        ----------
-        period : int
-            an instance of time t
-        iteration : int
-            one step learning 
+    #     Parameters
+    #     ----------
+    #     period : int
+    #         an instance of time t
+    #     iteration : int
+    #         one step learning 
 
-        Returns
-        -------
-        None.
+    #     Returns
+    #     -------
+    #     None.
 
-        """
-        N = self.prosumers.size
+    #     """
+    #     N = self.prosumers.size
 
-        for i in range(N):
-            self.bgmin[i][period] \
-                = min(self.prosumers[i].benefit[period], self.bgmin[i][period])
-            self.bgmax[i][period] \
-                = max(self.prosumers[i].benefit[period], self.bgmax[i][period])
+    #     for i in range(N):
+    #         self.bgmin[i][period] \
+    #             = min(self.prosumers[i].benefit[period], self.bgmin[i][period])
+    #         self.bgmax[i][period] \
+    #             = max(self.prosumers[i].benefit[period], self.bgmax[i][period])
             
             
     # The two following methods are used for production flexibility which is not yet totaly implemented
